@@ -1,27 +1,26 @@
 import asyncio
-from aiogram import Bot, Dispatcher
-
+import logging
+from aiogram import Bot, Dispatcher, F
 from config import TOKEN
+from app.user import user as user_router
 
-from app.user import user
-from app.admin import admin
-from app.database.models import async_main
-
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 async def main():
-    dp=Dispatcher()
+    """
+    Main function to initialize and run the bot.
+    """
+    logging.info("Starting bot...")
     bot = Bot(token=TOKEN)
-    dp.include_routers(user, admin)
-    dp.startup.register(on_startup)
+    dp = Dispatcher()
+
+    # Register the user router with all its handlers
+    dp.include_router(user_router)
+
+    # Start the bot and skip any updates that occurred while the bot was offline
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-async def on_startup(dispatcher):
-    await async_main()
-
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-
+    asyncio.run(main())

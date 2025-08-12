@@ -1,88 +1,138 @@
-import asyncio
-from aiogram import Router, types, F, Bot
-from aiogram.types import BufferedInputFile
-from app.generators import handle_generate_image, handle_generate_speech, handle_analyze_image, gemini, VOICES
+import logging
+from aiogram import Router, Bot
+from aiogram.types import Message, BufferedInputFile
+from aiogram.filters import Command
+from app.generators import handle_generate_image, handle_generate_speech, gemini, handle_analyze_image, VOICES
+from aiogram.enums import ChatAction
 
-# Initialize the router
+# All handlers should be registered in the router
 user = Router()
 
-# --- Command Handlers ---
+# Configure logging to a file and the console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
 
-@user.message(F.text == '/start')
-async def send_welcome(message: types.Message):
+@user.message(Command("start"))
+async def start_handler(msg: Message):
     """
-    Sends a welcome message and lists available commands.
+    Handler for the /start command.
     """
-    welcome_text = (
-        "Hello! I am a bot powered by Gemini. You can use the following commands:\n\n"
-        "/generate_image <prompt> - Generate an image from a text description.\n"
-        "/generate_speech <voice_name> <text> - Convert text to speech. Voice names are:\n"
-        f"    {', '.join(VOICES)}\n"
-        "/analyze_image - Reply to a photo with this command to get a description.\n"
-        "Just send me a message for a regular chat!"
+    await msg.answer(
+        "Hello! I am a bot that can generate images, speech, and analyze images using Google's AI models.\n"
+        "Here are my commands:\n\n"
+        "• /generate_image <prompt>\n"
+        "• /generate_speech <voice_name> <text>\n"
+        "• /help\n\n"
+        "You can also send me a photo with a caption to analyze it. Just send me a photo and type your question in the caption."
     )
-    await message.reply(welcome_text)
 
-@user.message(F.text.startswith('/generate_image'))
-async def handle_image_request(message: types.Message):
+@user.message(Command("help"))
+async def help_handler(msg: Message):
     """
-    Handles the /generate_image command.
+    Handler for the /help command.
     """
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
-    prompt = message.text[len('/generate_image '):]
+    help_text = (
+        "Here are my commands:\n\n"
+        "• /generate_image <prompt>: Generates an image based on your prompt.\n"
+        "   Example: `/generate_image a hyperrealistic photo of a cat wearing a tiny hat`\n\n"
+        "• /generate_speech <voice_name> <text>: Converts text to speech using a specified voice.\n"
+        "   You can choose a voice from this list:\n"
+        "   " + ", ".join(VOICES) + "\n"
+        "   Example: `/generate_speech Kore The quick brown fox jumps over the lazy dog.`\n\n"
+        "• /help: Displays this help message.\n\n"
+        "• **Image Analysis**: Send a photo with a text caption to get an analysis of the image."
+    )
+    await msg.answer(help_text)
 
-    # The handle_generate_image function now returns either a BufferedInputFile or a string
-    response_content = await handle_generate_image(prompt, message.bot)
-
-    if isinstance(response_content, BufferedInputFile):
-        # If it's an image file, send it
-        await message.reply_photo(photo=response_content)
-    elif isinstance(response_content, str):
-        # If it's a string, it's an error message, so send it as text
-        await message.reply(text=response_content)
-    else:
-        await message.reply("An unknown error occurred with image generation.")
-
-@user.message(F.text.startswith('/generate_speech'))
-async def handle_speech_request(message: types.Message):
+@user.message(Command("generate_image"))
+async def generate_image_handler(msg: Message, bot: Bot):
     """
-    Handles the /generate_speech command.
+    Handler for the /generate_image command.
     """
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="upload_voice")
-    parts = message.text.split(' ', 2)
-    if len(parts) < 3:
-        await message.reply("Usage: /generate_speech <voice_name> <text>")
+    prompt = msg.text.removeprefix("/generate_image ").strip()
+    if not prompt:
+        await msg.answer("Please provide a prompt after the command. Example: `/generate_image a dog in a spacesuit`")
         return
 
-    voice_name = parts[1]
-    text = parts[2]
+    await bot.send_chat_action(chat_id=msg.chat.id, action=ChatAction.UPLOAD_PHOTO)
+    
+    result = await handle_generate_image(prompt, bot)
 
+    if isinstance(result, BufferedInputFile):
+        await msg.answer_photo(photo=result)
+    else:
+        await msg.answer(result)
+
+@user.message(Command("generate_speech"))
+async def generate_speech_handler(msg: Message, bot: Bot):
+    """
+    Handler for the /generate_speech command.
+    """
+    log.info(f"Received command: '{msg.text}'")
+    command_parts = msg.text.removeprefix("/generate_speech ").strip().split(maxsplit=1)
+    log.info(f"Parsed command parts: {command_parts}")
+    
+    # Check if a voice name and text were provided
+    if len(command_parts) < 2:
+        await msg.answer(
+            "Please provide both a voice name and text after the command.\n"
+            "Example: `/generate_speech Kore Hello, world!`\n"
+            "Use `/help` to see a list of available voices."
+        )
+        return
+
+    voice_name, text = command_parts
+    
+    # Check if the provided voice name is valid
     if voice_name not in VOICES:
-        await message.reply(f"Invalid voice name. Available voices are:\n{', '.join(VOICES)}")
+        await msg.answer(
+            f"The voice name '{voice_name}' is not valid.\n"
+            "Please choose a voice from this list:\n"
+            "   " + ", ".join(VOICES) + "\n"
+            "Example: `/generate_speech Kore Hello, world!`"
+        )
         return
 
-    audio_file = await handle_generate_speech(text, voice_name, message.bot)
+    await bot.send_chat_action(chat_id=msg.chat.id, action=ChatAction.UPLOAD_VOICE)
+
+    audio_file = await handle_generate_speech(text, voice_name, bot)
+    
     if audio_file:
-        await message.reply_voice(voice=audio_file)
+        await msg.answer_voice(voice=audio_file)
     else:
-        await message.reply("Sorry, I couldn't generate the speech.")
+        await msg.answer("Sorry, I couldn't generate the speech. Check the console or `bot.log` for details.")
 
-@user.message(F.text == '/analyze_image')
-async def handle_analyze_image_command(message: types.Message):
-    if message.reply_to_message and message.reply_to_message.photo:
-        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-        photo = message.reply_to_message.photo[-1]
-        analysis = await handle_analyze_image(photo, message.bot)
+@user.message(lambda msg: msg.text and not msg.photo)
+async def text_handler(msg: Message, bot: Bot):
+    """
+    Handler for all other text messages.
+    """
+    await bot.send_chat_action(chat_id=msg.chat.id, action=ChatAction.TYPING)
+    
+    response = await gemini(msg.text)
+    await msg.answer(response)
+
+@user.message(lambda msg: msg.photo)
+async def image_handler(msg: Message, bot: Bot):
+    """
+    Handler for messages with photos.
+    """
+    if msg.caption:
+        await bot.send_chat_action(chat_id=msg.chat.id, action=ChatAction.TYPING)
+        
+        photo = msg.photo[-1] # Get the highest resolution photo
+        analysis = await handle_analyze_image(photo, bot)
+
         if analysis:
-            await message.reply(analysis)
+            await msg.answer(analysis)
         else:
-            await message.reply("Sorry, I couldn't analyze that image.")
+            await msg.answer("Sorry, I couldn't analyze that image.")
     else:
-        await message.reply("Please reply to a photo with this command.")
-
-@user.message()
-async def handle_text_message(message: types.Message):
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    user_message = message.text
-    response = await gemini(user_message)
-    await message.reply(response)
+        await msg.answer("Please send an image with a text caption so I know what to analyze.")
